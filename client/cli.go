@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"zftp/network"
 )
 
 type CommandFunc func(args []string) error
@@ -14,7 +15,9 @@ var (
 	Commands map[string]CommandFunc = map[string]CommandFunc{
 		"help":    help,
 		"get":     get,
+		"put":     put,
 		"connect": connect,
+		"exit":    exit,
 	}
 )
 
@@ -24,6 +27,7 @@ var (
 	ErrConnectArgument  = errors.New("needs 2 arguments to connect a hostname and a port")
 	ErrGetArgument      = errors.New("needs to arguments to get file, a remote name and a localname")
 	ErrInvalidLocalFile = errors.New("Invalid local file")
+	ErrExit             = errors.New("exit")
 )
 
 var (
@@ -32,7 +36,11 @@ var (
 	Connected bool
 )
 
-func getLine(in *os.File) (string, error) {
+func exit(_ []string) error {
+	return ErrExit
+}
+
+func GetLine(in *os.File) (string, error) {
 	reader := bufio.NewReader(in)
 	input, err := reader.ReadString('\n')
 	if err != nil {
@@ -88,8 +96,10 @@ func get(str []string) error {
 	if strings.Contains(str[1], ":") {
 		return ErrInvalidLocalFile
 	}
-	// err := DoGet(str[0],str[1])
-
+	err := network.DoGet(str[0], str[1], HostName, Port)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -118,6 +128,9 @@ func put(str []string) error {
 	if strings.Contains(str[1], ":") {
 		return ErrInvalidLocalFile
 	}
-	// err := DoPut(str[0],str[1])
+	err := network.DoPut(str[0], str[1], HostName, Port)
+	if err != nil {
+		return err
+	}
 	return nil
 }

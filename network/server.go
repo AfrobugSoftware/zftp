@@ -1,7 +1,10 @@
 package network
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"log"
 	"net"
 	"zftp/protocol"
 )
@@ -10,7 +13,7 @@ const (
 	MAXBUFFERSIZE = 2048
 )
 
-func StartResponder(host, port string) error {
+func StartServer(host, port string) error {
 	// Resolve the string address to a UDP address
 	udpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%s", host, port))
 	if err != nil {
@@ -21,24 +24,29 @@ func StartResponder(host, port string) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	defer conn.Close()
+	defer cancel()
 	for {
 		var buffer [MAXBUFFERSIZE]byte
 		_, address, err := conn.ReadFromUDP(buffer[:])
 		if err != nil {
 			return nil
 		}
-		go HandleResponderConnection(address, buffer)
+		go HandleResponderConnection(ctx, address, buffer)
 	}
 }
 
-func HandleResponderConnection(address *net.UDPAddr, buff [MAXBUFFERSIZE]byte) {
-	conn, err := net.DialUDP("udp4", nil, address)
+func HandleResponderConnection(ctx context.Context, address *net.UDPAddr, buff [MAXBUFFERSIZE]byte) {
+	conn, err := net.DialUDP("udp", nil, address)
 	if err != nil {
+		log.Println(err)
 		return
 	}
+	log.Printf("Recieved packet from: %s", address.String())
 	s := &protocol.State{}
-
-	defer conn.Close()
-
+	s.Conn = conn
+	s.RecvBuf = bytes.NewBuffer(buff[:])
+	s.Rtt = protocol.NewRtt()
+	s.Loop(ctx)
 }

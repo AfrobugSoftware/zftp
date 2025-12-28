@@ -6,11 +6,15 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/gob"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
+	"regexp"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -50,6 +54,10 @@ type State struct {
 }
 
 type StateFunc func(*State) error
+
+var (
+	pattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+\\.[a-zA-Z0-9]+$`)
+)
 
 // [SENT][RECV]
 var FSMClientTable = [OP_MAX + 1][OP_MAX + 1]StateFunc{
@@ -111,8 +119,8 @@ var FSMServerTable = [OP_MAX + 1][OP_MAX + 1]StateFunc{
 	//[sent = INIT]
 	{invalid,
 		invalid,
-		recvRRQ,
-		recvWQR,
+		recvRQ,
+		recvRQ,
 		invalid,
 		invalid,
 	},
@@ -200,25 +208,7 @@ func recvError(s *State) error {
 	if err != nil {
 		return err
 	}
-	switch payload.ErrCode {
-	case ErrCodeNotDefined:
-		err = ErrNotDefined
-	case ErrCodeFileNotFound:
-		err = ErrFileNotFound
-	case ErrCodeAccessViolation:
-		err = ErrAccessViolation
-	case ErrCodeDiskFull:
-		err = ErrDiskFull
-	case ErrCodeIllegalOperation:
-		err = ErrIllegalOperation
-	case ErrCodeUnknownPortNumber:
-		err = ErrUnknownPortNumber
-	case ErrCodeFileAlreadyExists:
-		err = ErrFileAlreadyExists
-	case ErrCodeNoSuchUser:
-		err = ErrNoSuchUser
-	}
-	return err
+	return errors.New(payload.ErrString)
 }
 
 func recvData(s *State) error {
@@ -263,27 +253,104 @@ func recvData(s *State) error {
 	return nil
 }
 
-func recvRRQ(s *State) error {
-	var payload Request
+func recvRQ(s *State) error {
+	var rrq Request
 	dec := gob.NewDecoder(s.RecvBuf)
-	err := dec.Decode(&payload)
+	err := dec.Decode(&rrq)
 	if err != nil {
 		return err
+	}
+	//verify file name
+	filename := strings.TrimSpace(strings.ToLower(rrq.Filename))
+	if !pattern.MatchString(filename) {
+		return ErrInvalidFileName
+	}
+	//use the current working directory
+	//would add directory service maybe another time
+	dir, err := os.Getwd()
+	if err != nil {
+		return ErrAccessViolation
+	}
+	filename = fmt.Sprintf("%s/%s", dir, filename)
+	switch rrq.Opcode {
+	case OP_RRQ:
+		err = recvRRQ(s, filename)
+	case OP_WRQ:
+		err = recvWQR(s, filename)
+	}
+	return err
+}
+
+func recvRRQ(s *State, filename string) error {
+	stat, err := os.Stat(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			err = s.SendError(ErrNoFile)
+			if err != nil {
+				return err
+			}
+			return ErrNoFile
+		}
+	}
+	//no read permission
+	if stat.Mode()&0200 != 0 {
+		err = s.SendError(ErrAccessViolation)
+		if err != nil {
+			return err
+		}
+		return ErrAccessViolation
+	}
+	file, err := os.Open(filename)
+	if err != nil {
+		s.SendError(err)
+		return err
+	}
+	s.CurFile = file
+	//set up an ack so we can pretend that we received it to start the data transfer
+	ack := Ack{
+		Opcode:      OP_ACK,
+		BlockNumber: 0,
+	}
+	enc := gob.NewEncoder(s.RecvBuf)
+	err = enc.Encode(ack)
+	if err != nil {
+		return err
+	}
+	err = recvAck(s)
+	if err != nil {
+		return nil
 	}
 	return nil
 }
-func recvWQR(s *State) error {
-	var payload Request
-	dec := gob.NewDecoder(s.RecvBuf)
-	err := dec.Decode(&payload)
+func recvWQR(s *State, filename string) error {
+	_, err := os.Stat(filename)
 	if err != nil {
+		if os.IsExist(err) {
+			err = s.SendError(err)
+			if err != nil {
+				return err
+			}
+			return ErrFileAlreadyExists
+		}
+	}
+	file, err := os.Create(filename)
+	if err != nil {
+		s.SendError(err)
 		return err
 	}
+	s.CurFile = file
+	err = s.SendAck(0)
+	s.NextBlockNum = 1
 	return nil
 }
 
 func (state *State) Loop(ctx context.Context) {
 	state.Rtt.NewPack()
+	//close the file and the connection ??
+	defer func() {
+		state.CurFile.Close()
+		state.Conn.Close()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -340,21 +407,20 @@ func (state *State) Loop(ctx context.Context) {
 	}
 }
 
-func (s *State) SendRQ(r int) error {
+func (s *State) SendRQ(r int, filename string) error {
 	var req Request
 	req.Opcode = uint16(r)
-	req.Filename = s.CurFile.Name()
+	req.Filename = filename
 	b, err := GobEncode(req)
 	if err != nil {
 		return err
 	}
-	n, err := s.Conn.WriteTo(b, s.Conn.RemoteAddr())
+	_, err = s.Conn.WriteTo(b, s.Conn.RemoteAddr())
 	if err != nil {
 		return err
 	}
 	s.OpSent = r
 	s.SendBuf = bytes.NewBuffer(b)
-	s.TotalBytes += int64(n)
 	return nil
 }
 
@@ -366,13 +432,12 @@ func (s *State) SendAck(blknum int) error {
 	if err != nil {
 		return err
 	}
-	n, err := s.Conn.WriteTo(b, s.Conn.RemoteAddr())
+	_, err = s.Conn.WriteTo(b, s.Conn.RemoteAddr())
 	if err != nil {
 		return err
 	}
 	s.OpSent = OP_ACK
 	s.SendBuf = bytes.NewBuffer(b)
-	s.TotalBytes += int64(n)
 	return nil
 }
 
@@ -397,40 +462,19 @@ func (s *State) SendData(blknum int, data []byte) error {
 	return nil
 }
 
-func (s *State) SendError(errCode int) error {
+func (s *State) SendError(err error) error {
 	var es Error
 	es.Opcode = OP_ERROR
-	es.ErrCode = int16(errCode)
-	var err error
-	switch errCode {
-	case ErrCodeNotDefined:
-		err = ErrNotDefined
-	case ErrCodeFileNotFound:
-		err = ErrFileNotFound
-	case ErrCodeAccessViolation:
-		err = ErrAccessViolation
-	case ErrCodeDiskFull:
-		err = ErrDiskFull
-	case ErrCodeIllegalOperation:
-		err = ErrIllegalOperation
-	case ErrCodeUnknownPortNumber:
-		err = ErrUnknownPortNumber
-	case ErrCodeFileAlreadyExists:
-		err = ErrFileAlreadyExists
-	case ErrCodeNoSuchUser:
-		err = ErrNoSuchUser
-	}
 	es.ErrString = err.Error()
 	b, err := GobEncode(es)
 	if err != nil {
 		return err
 	}
-	n, err := s.Conn.WriteTo(b, s.Conn.RemoteAddr())
+	_, err = s.Conn.WriteTo(b, s.Conn.RemoteAddr())
 	if err != nil {
 		return err
 	}
 	s.OpSent = OP_ERROR
 	s.SendBuf = bytes.NewBuffer(b)
-	s.TotalBytes += int64(n)
 	return nil
 }

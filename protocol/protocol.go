@@ -8,17 +8,6 @@ import (
 )
 
 const (
-	ErrCodeNotDefined = iota
-	ErrCodeFileNotFound
-	ErrCodeAccessViolation
-	ErrCodeDiskFull
-	ErrCodeIllegalOperation
-	ErrCodeUnknownPortNumber
-	ErrCodeFileAlreadyExists
-	ErrCodeNoSuchUser
-)
-
-const (
 	BlockDataSize = 1024
 	MaxFileSize   = 2 ^ 32
 )
@@ -43,7 +32,6 @@ type Ack struct {
 
 type Error struct {
 	Opcode    uint16
-	ErrCode   int16
 	ErrString string
 }
 
@@ -55,7 +43,9 @@ var (
 	ErrIllegalOperation   = errors.New("illegal operation")
 	ErrUnknownPortNumber  = errors.New("unknown port number")
 	ErrFileAlreadyExists  = errors.New("file already exists")
+	ErrInvalidFileName    = errors.New("Invalid file name")
 	ErrNoSuchUser         = errors.New("no such user")
+	ErrNoFile             = errors.New("no such file")
 	ErrBlockSize          = errors.New("block size excceded")
 	ErrInvalidBlockNumner = errors.New("Invalid block number received")
 	ErrInvalidCheckSum    = errors.New("Invalid checksum")
