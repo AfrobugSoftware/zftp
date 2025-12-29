@@ -116,7 +116,7 @@ func help(_ []string) error {
 }
 
 func put(str []string) error {
-	if len(str) == 2 {
+	if len(str) != 2 {
 		return ErrGetArgument
 	}
 	if strings.Contains(str[0], ":") {

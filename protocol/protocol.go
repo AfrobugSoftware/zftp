@@ -51,6 +51,7 @@ var (
 	ErrInvalidBlockNumner = errors.New("Invalid block number received")
 	ErrInvalidCheckSum    = errors.New("Invalid checksum")
 	ErrInvalidOpCode      = errors.New("invalid opcode")
+	ErrProtocol           = errors.New("protocol error")
 	Complete              = errors.New("transfer complete")
 )
 

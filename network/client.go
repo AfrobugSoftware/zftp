@@ -50,7 +50,7 @@ func DoPut(remotefile, localfile, hostname, port string) error {
 	if err != nil {
 		return err
 	}
-	conn, err := net.DialUDP("udp", nil, udpAddr)
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{})
 	if err != nil {
 		return err
 	}
@@ -60,6 +60,7 @@ func DoPut(remotefile, localfile, hostname, port string) error {
 	s.CurFile = lfile
 	s.Rtt = protocol.NewRtt()
 	s.SType = protocol.CLIENT
+	s.SendAddr = udpAddr
 	start := time.Now()
 	err = s.SendRQ(protocol.OP_WRQ, remotefile)
 	if err != nil {

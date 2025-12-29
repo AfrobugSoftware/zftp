@@ -172,7 +172,7 @@ var FSMServerTable = [OP_MAX + 1][OP_MAX + 1]StateFunc{
 
 func invalid(s *State) error {
 	log.Printf("protocol error: op_sent: %d, op_recv: %d\n", s.OpSent, s.OpRecv)
-	return nil
+	return ErrProtocol
 }
 
 func recvAck(s *State) error {
@@ -183,6 +183,7 @@ func recvAck(s *State) error {
 	}
 	log.Println("RECEVING [ACK <-]")
 	defer s.RecvBuf.Reset()
+	log.Printf("ack: %d nblk: %d \n", ack.BlockNumber, s.NextBlockNum)
 	if ack.BlockNumber == int16(s.NextBlockNum) {
 		//send the next block
 		var blkData [BlockDataSize]byte
@@ -191,7 +192,9 @@ func recvAck(s *State) error {
 		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 			return err
 		}
-		err = s.SendData(s.NextBlockNum+1, blkData[:n])
+		s.NextBlockNum++
+		log.Printf("sending data for block: %d\n", s.NextBlockNum)
+		err = s.SendData(s.NextBlockNum, blkData[:n])
 		if err != nil {
 			return err
 		}
@@ -202,6 +205,7 @@ func recvAck(s *State) error {
 	} else if ack.BlockNumber < (int16(s.NextBlockNum)-1) || ack.BlockNumber > int16(s.NextBlockNum) {
 		return ErrInvalidBlockNumner
 	}
+	log.Println("Reached here")
 	return nil
 }
 
@@ -228,8 +232,10 @@ func recvData(s *State) error {
 	if dlen > BlockDataSize {
 		return ErrBlockSize
 	}
+	log.Printf("blk: %d nblk:%d\n", payload.BlockNumber, s.NextBlockNum)
 	if s.NextBlockNum == int(payload.BlockNumber) {
 		//correct block
+		s.NextBlockNum++
 		if dlen > 0 {
 			nc := sha256.Sum256(payload.Data)
 			if !bytes.Equal(nc[:], payload.CheckSum[:]) {
@@ -245,7 +251,6 @@ func recvData(s *State) error {
 			//transfer complete, close file
 			s.CurFile.Close()
 		}
-		s.NextBlockNum++
 	} else if payload.BlockNumber < (int16(s.NextBlockNum)-1) || payload.BlockNumber > int16(s.NextBlockNum) {
 		return ErrInvalidBlockNumner
 	}
@@ -269,7 +274,6 @@ func recvRQ(s *State) error {
 	//verify file name
 	log.Println("RECEVING [RQ <-]")
 	filename := strings.TrimSpace(strings.ToLower(rrq.Filename))
-	log.Printf("READING: [%s]\n", filename)
 	if !pattern.MatchString(filename) {
 		return ErrInvalidFileName
 	}
@@ -282,8 +286,10 @@ func recvRQ(s *State) error {
 	filename = fmt.Sprintf("%s/%s", dir, filename)
 	switch opcode {
 	case OP_RRQ:
+		log.Printf("READING: [%s]\n", filename)
 		err = recvRRQ(s, filename)
 	case OP_WRQ:
+		log.Printf("WRITING: [%s]\n", filename)
 		err = recvWQR(s, filename)
 	}
 	return err
@@ -343,8 +349,11 @@ func recvWQR(s *State, filename string) error {
 		return err
 	}
 	s.CurFile = file
-	err = s.SendAck(0)
 	s.NextBlockNum = 1
+	err = s.SendAck(0)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -421,7 +430,7 @@ func (state *State) Loop(ctx context.Context) {
 func (s *State) SendRQ(r int, filename string) error {
 	var req Request
 	req.Filename = filename
-	b, err := GobEncode(req, OP_RRQ)
+	b, err := GobEncode(req, int16(r))
 	if err != nil {
 		return err
 	}
@@ -432,7 +441,12 @@ func (s *State) SendRQ(r int, filename string) error {
 	}
 	s.OpSent = r
 	s.SendBuf = bytes.NewBuffer(b)
-	s.NextBlockNum = 1
+	switch r {
+	case OP_RRQ:
+		s.NextBlockNum = 1
+	case OP_WRQ:
+		s.NextBlockNum = 0
+	}
 	return nil
 }
 
@@ -470,7 +484,6 @@ func (s *State) SendData(blknum int, data []byte) error {
 	s.OpSent = OP_DATA
 	s.SendBuf = bytes.NewBuffer(b)
 	s.TotalBytes += int64(n)
-	s.NextBlockNum = blknum //for the ack
 	return nil
 }
 
