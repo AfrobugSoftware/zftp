@@ -15,9 +15,13 @@ const (
 )
 
 func main() {
-	fmt.Println("Starting zftp")
 	if len(os.Args) < 2 {
-		log.Println("sp")
+		var usage strings.Builder
+		usage.WriteString("Usage \n")
+		usage.WriteString("zftp [:type] [:host] [:port] \n")
+		usage.WriteString(":type -> \"server\" or \"client\"\n")
+		fmt.Print(usage.String())
+		return
 	}
 	ftpType := strings.TrimSpace(strings.ToLower(os.Args[1]))
 	sv := flag.NewFlagSet("server", flag.ExitOnError)
@@ -27,7 +31,7 @@ func main() {
 	switch ftpType {
 	case "client":
 		for {
-			log.Print(prompt)
+			fmt.Print(prompt)
 			input, err := client.GetLine(os.Stdin)
 			if err != nil {
 				log.Println(err)
@@ -40,7 +44,7 @@ func main() {
 			}
 		}
 	case "server":
-		log.Println("Staring server")
+		fmt.Println("Staring server")
 		subArg := os.Args[2:]
 		err := sv.Parse(subArg)
 		if err != nil {
@@ -48,5 +52,8 @@ func main() {
 			return
 		}
 		network.StartServer(*host, *port)
+	default:
+		fmt.Println("no type specified")
 	}
+
 }

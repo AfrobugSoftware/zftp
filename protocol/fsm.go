@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
-	"encoding/gob"
 	"errors"
 	"fmt"
 	"io"
@@ -56,7 +54,7 @@ type State struct {
 type StateFunc func(*State) error
 
 var (
-	pattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+\\.[a-zA-Z0-9]+$`)
+	pattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+$`)
 )
 
 // [SENT][RECV]
@@ -118,9 +116,9 @@ var FSMClientTable = [OP_MAX + 1][OP_MAX + 1]StateFunc{
 var FSMServerTable = [OP_MAX + 1][OP_MAX + 1]StateFunc{
 	//[sent = INIT]
 	{invalid,
+		recvRQ,
+		recvRQ,
 		invalid,
-		recvRQ,
-		recvRQ,
 		invalid,
 		invalid,
 	},
@@ -178,11 +176,12 @@ func invalid(s *State) error {
 
 func recvAck(s *State) error {
 	var ack Ack
-	dec := gob.NewDecoder(s.RecvBuf)
-	err := dec.Decode(&ack)
+	_, err := DecodeGob(s.RecvBuf, &ack)
 	if err != nil {
 		return err
 	}
+	log.Println("RECEVING [ACK <-]")
+	defer s.RecvBuf.Reset()
 	if ack.BlockNumber == int16(s.NextBlockNum) {
 		//send the next block
 		var blkData [BlockDataSize]byte
@@ -202,22 +201,25 @@ func recvAck(s *State) error {
 }
 
 func recvError(s *State) error {
-	dec := gob.NewDecoder(s.RecvBuf)
 	var payload Error
-	err := dec.Decode(&payload)
+	_, err := DecodeGob(s.RecvBuf, &payload)
 	if err != nil {
 		return err
 	}
+	log.Println("RECEVING [ERROR <-]")
+	defer s.RecvBuf.Reset()
 	return errors.New(payload.ErrString)
 }
 
 func recvData(s *State) error {
 	var payload Block
-	dec := gob.NewDecoder(s.RecvBuf)
-	err := dec.Decode(&payload)
+	_, err := DecodeGob(s.RecvBuf, &payload)
 	if err != nil {
 		return err
 	}
+	log.Println("RECEVING [DATA <-]")
+
+	defer s.RecvBuf.Reset()
 	dlen := len(payload.Data)
 	if dlen > BlockDataSize {
 		return ErrBlockSize
@@ -255,13 +257,15 @@ func recvData(s *State) error {
 
 func recvRQ(s *State) error {
 	var rrq Request
-	dec := gob.NewDecoder(s.RecvBuf)
-	err := dec.Decode(&rrq)
+	opcode, err := DecodeGob(s.RecvBuf, &rrq)
 	if err != nil {
 		return err
 	}
+	defer s.RecvBuf.Reset()
 	//verify file name
+	log.Println("RECEVING [RQ <-]")
 	filename := strings.TrimSpace(strings.ToLower(rrq.Filename))
+	log.Printf("READING: [%s]\n", filename)
 	if !pattern.MatchString(filename) {
 		return ErrInvalidFileName
 	}
@@ -272,7 +276,7 @@ func recvRQ(s *State) error {
 		return ErrAccessViolation
 	}
 	filename = fmt.Sprintf("%s/%s", dir, filename)
-	switch rrq.Opcode {
+	switch opcode {
 	case OP_RRQ:
 		err = recvRRQ(s, filename)
 	case OP_WRQ:
@@ -293,12 +297,12 @@ func recvRRQ(s *State, filename string) error {
 		}
 	}
 	//no read permission
-	if stat.Mode()&0200 != 0 {
+	if stat.Mode()&0444 == 0 {
 		err = s.SendError(ErrAccessViolation)
 		if err != nil {
 			return err
 		}
-		return ErrAccessViolation
+		return (ErrAccessViolation)
 	}
 	file, err := os.Open(filename)
 	if err != nil {
@@ -308,14 +312,10 @@ func recvRRQ(s *State, filename string) error {
 	s.CurFile = file
 	//set up an ack so we can pretend that we received it to start the data transfer
 	ack := Ack{
-		Opcode:      OP_ACK,
 		BlockNumber: 0,
 	}
-	enc := gob.NewEncoder(s.RecvBuf)
-	err = enc.Encode(ack)
-	if err != nil {
-		return err
-	}
+	b, err := GobEncode(ack, OP_ACK)
+	s.RecvBuf = bytes.NewBuffer(b)
 	err = recvAck(s)
 	if err != nil {
 		return nil
@@ -356,35 +356,42 @@ func (state *State) Loop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
-			if err := state.Conn.SetReadDeadline(time.Now().Add(state.Rtt.Start())); err != nil {
-				log.Println(err)
-				runtime.Goexit()
-			}
-			state.RecvBuf.Reset()
-			buffer := make([]byte, MAXBUFFERSIZE)
-			n, addr, err := state.Conn.ReadFrom(buffer)
-			if err != nil {
-				if e, ok := err.(net.Error); ok && e.Timeout() {
-					err := state.Rtt.Timeout()
-					if err != nil {
-						log.Println(err)
-						return
-					}
-					_, err = state.Conn.WriteTo(state.SendBuf.Bytes(), addr)
-					if err != nil {
-						log.Println(err)
-						return
+			if state.RecvBuf == nil || state.RecvBuf.Len() == 0 {
+				if err := state.Conn.SetReadDeadline(time.Now().Add(state.Rtt.Start())); err != nil {
+					log.Println(err)
+					runtime.Goexit()
+				}
+				buffer := make([]byte, MAXBUFFERSIZE)
+				n, addr, err := state.Conn.ReadFrom(buffer)
+				if err != nil {
+					if e, ok := err.(net.Error); ok && e.Timeout() {
+						err := state.Rtt.Timeout()
+						if err != nil {
+							log.Println(err)
+							return
+						}
+						_, err = state.Conn.WriteTo(state.SendBuf.Bytes(), addr)
+						if err != nil {
+							log.Println(err)
+							return
+						}
 					}
 				}
+				state.Rtt.Stop()
+				if n < 4 {
+					log.Printf("received: %d bytes\n", n)
+					return
+				}
+				state.RecvBuf = bytes.NewBuffer(buffer)
 			}
-			state.Rtt.Stop()
-			if n < 4 {
-				log.Printf("received: %d bytes\n", n)
+			Opcode, err := GetOpcode(state.RecvBuf.Bytes())
+			if err != nil {
+				log.Println(err)
 				return
 			}
-			Opcode := binary.BigEndian.Uint16(buffer[0:2])
 			if Opcode < OP_MIN || Opcode > OP_MAX {
 				log.Printf("Invalid opcode: %d\n", Opcode)
+				return
 			}
 			var fsmStep StateFunc
 			switch state.SType {
@@ -397,7 +404,6 @@ func (state *State) Loop(ctx context.Context) {
 				return
 			}
 			state.OpRecv = int(Opcode)
-			state.RecvBuf = bytes.NewBuffer(buffer)
 			err = fsmStep(state)
 			if err != nil {
 				log.Println(err)
@@ -409,13 +415,13 @@ func (state *State) Loop(ctx context.Context) {
 
 func (s *State) SendRQ(r int, filename string) error {
 	var req Request
-	req.Opcode = uint16(r)
 	req.Filename = filename
-	b, err := GobEncode(req)
+	b, err := GobEncode(req, OP_RRQ)
 	if err != nil {
 		return err
 	}
-	_, err = s.Conn.WriteTo(b, s.Conn.RemoteAddr())
+	log.Println("SENDING [RQ ->]")
+	_, err = s.Conn.Write(b)
 	if err != nil {
 		return err
 	}
@@ -426,13 +432,13 @@ func (s *State) SendRQ(r int, filename string) error {
 
 func (s *State) SendAck(blknum int) error {
 	var ack Ack
-	ack.Opcode = OP_ACK
 	ack.BlockNumber = int16(blknum)
-	b, err := GobEncode(ack)
+	b, err := GobEncode(ack, OP_ACK)
 	if err != nil {
 		return err
 	}
-	_, err = s.Conn.WriteTo(b, s.Conn.RemoteAddr())
+	log.Println("SENDING [ACK ->]")
+	_, err = s.Conn.Write(b)
 	if err != nil {
 		return err
 	}
@@ -443,15 +449,15 @@ func (s *State) SendAck(blknum int) error {
 
 func (s *State) SendData(blknum int, data []byte) error {
 	var block Block
-	block.Opcode = OP_DATA
 	block.BlockNumber = int16(blknum)
 	block.CheckSum = sha256.Sum256(data)
 	copy(block.Data, data)
-	b, err := GobEncode(block)
+	b, err := GobEncode(block, OP_DATA)
 	if err != nil {
 		return err
 	}
-	n, err := s.Conn.WriteTo(b, s.Conn.RemoteAddr())
+	log.Println("SENDING [DATA ->]")
+	n, err := s.Conn.Write(b)
 	if err != nil {
 		return err
 	}
@@ -464,13 +470,13 @@ func (s *State) SendData(blknum int, data []byte) error {
 
 func (s *State) SendError(err error) error {
 	var es Error
-	es.Opcode = OP_ERROR
 	es.ErrString = err.Error()
-	b, err := GobEncode(es)
+	b, err := GobEncode(es, OP_ERROR)
 	if err != nil {
 		return err
 	}
-	_, err = s.Conn.WriteTo(b, s.Conn.RemoteAddr())
+	log.Println("SENDING [ERROR ->]")
+	_, err = s.Conn.Write(b)
 	if err != nil {
 		return err
 	}

@@ -12,26 +12,27 @@ const (
 	MaxFileSize   = 2 ^ 32
 )
 
+// for gobing
+type OpCode struct {
+	Code int16
+}
+
 // for WRQ and RRQ
 type Request struct {
-	Opcode   uint16
 	Filename string
 }
 
 type Block struct {
-	Opcode      uint16
 	BlockNumber int16
 	CheckSum    [32]byte
 	Data        []byte
 }
 
 type Ack struct {
-	Opcode      uint16
 	BlockNumber int16
 }
 
 type Error struct {
-	Opcode    uint16
 	ErrString string
 }
 
@@ -49,6 +50,7 @@ var (
 	ErrBlockSize          = errors.New("block size excceded")
 	ErrInvalidBlockNumner = errors.New("Invalid block number received")
 	ErrInvalidCheckSum    = errors.New("Invalid checksum")
+	ErrInvalidOpCode      = errors.New("invalid opcode")
 	Complete              = errors.New("transfer complete")
 )
 
@@ -60,16 +62,42 @@ var (
 	}
 )
 
-func GobEncode(data any) ([]byte, error) {
+func GetOpcode(buff []byte) (int16, error) {
+	dec := gob.NewDecoder(bytes.NewReader(buff))
+	var code OpCode
+	if err := dec.Decode(&code); err != nil {
+		return -1, err
+	}
+	return code.Code, nil
+}
+
+func GobEncode(data any, code int16) ([]byte, error) {
 	buff := BufferPool.Get().(*bytes.Buffer)
 	defer func() {
 		buff.Reset()
 		BufferPool.Put(buff)
 	}()
+	opcode := OpCode{code}
 	enc := gob.NewEncoder(buff)
-	err := enc.Encode(data)
+	err := enc.Encode(opcode)
+	if err != nil {
+		return nil, err
+	}
+	err = enc.Encode(data)
 	if err != nil {
 		return nil, err
 	}
 	return buff.Bytes(), nil
+}
+
+func DecodeGob[T any](data *bytes.Buffer, v *T) (int16, error) {
+	dec := gob.NewDecoder(data)
+	var code OpCode
+	if err := dec.Decode(&code); err != nil {
+		return -1, err
+	}
+	if err := dec.Decode(v); err != nil {
+		return -1, err
+	}
+	return code.Code, nil
 }

@@ -25,7 +25,7 @@ var (
 	ErrNoToken          = errors.New("no token")
 	ErrNoCommand        = errors.New("no such command")
 	ErrConnectArgument  = errors.New("needs 2 arguments to connect a hostname and a port")
-	ErrGetArgument      = errors.New("needs to arguments to get file, a remote name and a localname")
+	ErrGetArgument      = errors.New("needs arguments to get file, a remotename and a localname")
 	ErrInvalidLocalFile = errors.New("Invalid local file")
 	ErrExit             = errors.New("exit")
 )
@@ -85,7 +85,7 @@ func connect(str []string) error {
 }
 
 func get(str []string) error {
-	if len(str) == 2 {
+	if len(str) != 2 {
 		return ErrGetArgument
 	}
 	if strings.Contains(str[0], ":") {
@@ -109,10 +109,9 @@ func help(_ []string) error {
 	fmt.Fprint(&helpString, "get <remote filename> <local file name> ; reads remote file into the local file path\n")
 	fmt.Fprint(&helpString, "put <remote filename> <local file name> ; reads remote file into the local file path\n")
 	fmt.Fprint(&helpString, "connect <hostname> <port>; connects to the host \n")
-	fmt.Fprint(&helpString, "mode <modetype> ; it should be either text or binary \n")
 	fmt.Fprint(&helpString, "exit ; closes the applicaiton\n")
 
-	fmt.Println(helpString)
+	fmt.Println(helpString.String())
 	return nil
 }
 

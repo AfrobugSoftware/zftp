@@ -11,7 +11,7 @@ import (
 )
 
 func DoGet(remotefile, localfile, hostname, port string) error {
-	lfile, err := os.Open(localfile)
+	lfile, err := os.Create(localfile)
 	if err != nil {
 		return err
 	}
@@ -28,6 +28,7 @@ func DoGet(remotefile, localfile, hostname, port string) error {
 	s.Conn = conn
 	s.CurFile = lfile
 	s.Rtt = protocol.NewRtt()
+	s.SType = protocol.CLIENT
 	start := time.Now()
 	err = s.SendRQ(protocol.OP_RRQ, remotefile)
 	if err != nil {
@@ -57,6 +58,7 @@ func DoPut(remotefile, localfile, hostname, port string) error {
 	s.Conn = conn
 	s.CurFile = lfile
 	s.Rtt = protocol.NewRtt()
+	s.SType = protocol.CLIENT
 	start := time.Now()
 	err = s.SendRQ(protocol.OP_WRQ, remotefile)
 	if err != nil {

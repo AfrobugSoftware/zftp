@@ -24,6 +24,7 @@ func StartServer(host, port string) error {
 	if err != nil {
 		return err
 	}
+	log.Printf("Listening on: %s:%s", host, port)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer conn.Close()
 	defer cancel()
@@ -48,5 +49,6 @@ func HandleResponderConnection(ctx context.Context, address *net.UDPAddr, buff [
 	s.Conn = conn
 	s.RecvBuf = bytes.NewBuffer(buff[:])
 	s.Rtt = protocol.NewRtt()
+	s.SType = protocol.SERVER
 	s.Loop(ctx)
 }
