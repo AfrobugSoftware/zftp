@@ -34,11 +34,11 @@ func StartServer(host, port string) error {
 		if err != nil {
 			return nil
 		}
-		go HandleResponderConnection(ctx, address, buffer)
+		go HandleServerConnection(ctx, address, buffer)
 	}
 }
 
-func HandleResponderConnection(ctx context.Context, address *net.UDPAddr, buff [MAXBUFFERSIZE]byte) {
+func HandleServerConnection(ctx context.Context, address *net.UDPAddr, buff [MAXBUFFERSIZE]byte) {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{})
 	if err != nil {
 		log.Println(err)
