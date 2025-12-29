@@ -39,7 +39,7 @@ func StartServer(host, port string) error {
 }
 
 func HandleResponderConnection(ctx context.Context, address *net.UDPAddr, buff [MAXBUFFERSIZE]byte) {
-	conn, err := net.DialUDP("udp", nil, address)
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{})
 	if err != nil {
 		log.Println(err)
 		return
@@ -50,5 +50,6 @@ func HandleResponderConnection(ctx context.Context, address *net.UDPAddr, buff [
 	s.RecvBuf = bytes.NewBuffer(buff[:])
 	s.Rtt = protocol.NewRtt()
 	s.SType = protocol.SERVER
+	s.SendAddr = address
 	s.Loop(ctx)
 }

@@ -43,6 +43,7 @@ type State struct {
 	CurFile      *os.File
 	Rtt          *Rtt
 	Conn         *net.UDPConn
+	SendAddr     *net.UDPAddr
 	SendBuf      *bytes.Buffer
 	RecvBuf      *bytes.Buffer
 	NextBlockNum int
@@ -194,6 +195,10 @@ func recvAck(s *State) error {
 		if err != nil {
 			return err
 		}
+		//sent the last block
+		if n < BlockDataSize {
+			return Complete
+		}
 	} else if ack.BlockNumber < (int16(s.NextBlockNum)-1) || ack.BlockNumber > int16(s.NextBlockNum) {
 		return ErrInvalidBlockNumner
 	}
@@ -218,7 +223,6 @@ func recvData(s *State) error {
 		return err
 	}
 	log.Println("RECEVING [DATA <-]")
-
 	defer s.RecvBuf.Reset()
 	dlen := len(payload.Data)
 	if dlen > BlockDataSize {
@@ -362,7 +366,7 @@ func (state *State) Loop(ctx context.Context) {
 					runtime.Goexit()
 				}
 				buffer := make([]byte, MAXBUFFERSIZE)
-				n, addr, err := state.Conn.ReadFrom(buffer)
+				n, addr, err := state.Conn.ReadFromUDP(buffer)
 				if err != nil {
 					if e, ok := err.(net.Error); ok && e.Timeout() {
 						err := state.Rtt.Timeout()
@@ -370,7 +374,7 @@ func (state *State) Loop(ctx context.Context) {
 							log.Println(err)
 							return
 						}
-						_, err = state.Conn.WriteTo(state.SendBuf.Bytes(), addr)
+						_, err = state.Conn.WriteTo(state.SendBuf.Bytes(), state.SendAddr)
 						if err != nil {
 							log.Println(err)
 							return
@@ -382,6 +386,7 @@ func (state *State) Loop(ctx context.Context) {
 					log.Printf("received: %d bytes\n", n)
 					return
 				}
+				state.SendAddr = addr
 				state.RecvBuf = bytes.NewBuffer(buffer)
 			}
 			Opcode, err := GetOpcode(state.RecvBuf.Bytes())
@@ -420,13 +425,14 @@ func (s *State) SendRQ(r int, filename string) error {
 	if err != nil {
 		return err
 	}
-	log.Println("SENDING [RQ ->]")
-	_, err = s.Conn.Write(b)
+	log.Println("SENDING [RQ -> ]")
+	_, err = s.Conn.WriteTo(b, s.SendAddr)
 	if err != nil {
 		return err
 	}
 	s.OpSent = r
 	s.SendBuf = bytes.NewBuffer(b)
+	s.NextBlockNum = 1
 	return nil
 }
 
@@ -437,8 +443,8 @@ func (s *State) SendAck(blknum int) error {
 	if err != nil {
 		return err
 	}
-	log.Println("SENDING [ACK ->]")
-	_, err = s.Conn.Write(b)
+	log.Println("SENDING [ACK -> ]")
+	_, err = s.Conn.WriteTo(b, s.SendAddr)
 	if err != nil {
 		return err
 	}
@@ -451,13 +457,13 @@ func (s *State) SendData(blknum int, data []byte) error {
 	var block Block
 	block.BlockNumber = int16(blknum)
 	block.CheckSum = sha256.Sum256(data)
-	copy(block.Data, data)
+	block.Data = append(block.Data, data...)
 	b, err := GobEncode(block, OP_DATA)
 	if err != nil {
 		return err
 	}
-	log.Println("SENDING [DATA ->]")
-	n, err := s.Conn.Write(b)
+	log.Println("SENDING [DATA -> ]")
+	n, err := s.Conn.WriteTo(b, s.SendAddr)
 	if err != nil {
 		return err
 	}
@@ -475,8 +481,8 @@ func (s *State) SendError(err error) error {
 	if err != nil {
 		return err
 	}
-	log.Println("SENDING [ERROR ->]")
-	_, err = s.Conn.Write(b)
+	log.Println("SENDING [ERROR -> ]")
+	_, err = s.Conn.WriteTo(b, s.SendAddr)
 	if err != nil {
 		return err
 	}
